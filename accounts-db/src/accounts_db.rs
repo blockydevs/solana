@@ -614,9 +614,7 @@ struct GenerateIndexTimings {
     pub min_bin_size: usize,
     pub max_bin_size: usize,
     pub total_items: usize,
-    pub storage_size_accounts_map_us: u64,
     pub storage_size_storages_us: u64,
-    pub storage_size_accounts_map_flatten_us: u64,
     pub index_flush_us: u64,
     pub rent_paying: AtomicUsize,
     pub amount_to_top_off_rent: AtomicU64,
@@ -649,18 +647,8 @@ impl GenerateIndexTimings {
             ("min_bin_size", self.min_bin_size as i64, i64),
             ("max_bin_size", self.max_bin_size as i64, i64),
             (
-                "storage_size_accounts_map_us",
-                self.storage_size_accounts_map_us as i64,
-                i64
-            ),
-            (
                 "storage_size_storages_us",
                 self.storage_size_storages_us as i64,
-                i64
-            ),
-            (
-                "storage_size_accounts_map_flatten_us",
-                self.storage_size_accounts_map_flatten_us as i64,
                 i64
             ),
             ("index_flush_us", self.index_flush_us as i64, i64),
@@ -8961,9 +8949,10 @@ impl AccountsDb {
     fn generate_index_for_slot(
         &self,
         accounts_map: GenerateIndexAccountsMap<'_>,
-        slot: &Slot,
+        slot: Slot,
         store_id: AppendVecId,
         rent_collector: &RentCollector,
+        storage_info: &StorageSizeAndCountMap,
     ) -> SlotIndexGenerationInfo {
         if accounts_map.is_empty() {
             return SlotIndexGenerationInfo::default();
@@ -8976,7 +8965,10 @@ impl AccountsDb {
         let mut num_accounts_rent_paying = 0;
         let num_accounts = accounts_map.len();
         let mut amount_to_top_off_rent = 0;
+        let mut stored_size_alive = 0;
+
         let items = accounts_map.into_iter().map(|(pubkey, stored_account)| {
+            stored_size_alive += stored_account.stored_size();
             if secondary {
                 self.accounts_index.update_secondary_indexes(
                     &pubkey,
@@ -9006,15 +8998,22 @@ impl AccountsDb {
             )
         });
 
-        let (dirty_pubkeys, insert_time_us) = self
+        let (dirty_pubkeys, insert_time_us, generate_index_count) = self
             .accounts_index
-            .insert_new_if_missing_into_primary_index(*slot, num_accounts, items);
+            .insert_new_if_missing_into_primary_index(slot, num_accounts, items);
+
+        {
+            // second, collect into the shared DashMap once we've figured out all the info per store_id
+            let mut info = storage_info.entry(store_id).or_default();
+            info.stored_size += stored_size_alive;
+            info.count += generate_index_count.count;
+        }
 
         // dirty_pubkeys will contain a pubkey if an item has multiple rooted entries for
         // a given pubkey. If there is just a single item, there is no cleaning to
         // be done on that pubkey. Use only those pubkeys with multiple updates.
         if !dirty_pubkeys.is_empty() {
-            self.uncleaned_pubkeys.insert(*slot, dirty_pubkeys);
+            self.uncleaned_pubkeys.insert(slot, dirty_pubkeys);
         }
         SlotIndexGenerationInfo {
             insert_time_us,
@@ -9161,7 +9160,6 @@ impl AccountsDb {
             let rent_paying = AtomicUsize::new(0);
             let amount_to_top_off_rent = AtomicU64::new(0);
             let total_including_duplicates = AtomicU64::new(0);
-            let storage_info_timings = Mutex::new(GenerateIndexTimings::default());
             let scan_time: u64 = slots
                 .par_chunks(chunk_size)
                 .map(|slots| {
@@ -9183,12 +9181,6 @@ impl AccountsDb {
 
                         scan_time.stop();
                         scan_time_sum += scan_time.as_us();
-                        Self::update_storage_info(
-                            &storage_info,
-                            &accounts_map,
-                            &storage_info_timings,
-                            store_id,
-                        );
 
                         let insert_us = if pass == 0 {
                             // generate index
@@ -9203,9 +9195,10 @@ impl AccountsDb {
                                     rent_paying_accounts_by_partition_this_slot,
                             } = self.generate_index_for_slot(
                                 accounts_map,
-                                slot,
+                                *slot,
                                 store_id,
                                 &rent_collector,
+                                &storage_info,
                             );
                             rent_paying.fetch_add(rent_paying_this_slot, Ordering::Relaxed);
                             amount_to_top_off_rent
@@ -9315,7 +9308,6 @@ impl AccountsDb {
             }
             let unique_pubkeys_by_bin = unique_pubkeys_by_bin.into_inner().unwrap();
 
-            let storage_info_timings = storage_info_timings.into_inner().unwrap();
             let mut timings = GenerateIndexTimings {
                 index_flush_us,
                 scan_time,
@@ -9329,9 +9321,6 @@ impl AccountsDb {
                 total_duplicate_slot_keys: total_duplicate_slot_keys.load(Ordering::Relaxed),
                 populate_duplicate_keys_us,
                 total_including_duplicates: total_including_duplicates.load(Ordering::Relaxed),
-                storage_size_accounts_map_us: storage_info_timings.storage_size_accounts_map_us,
-                storage_size_accounts_map_flatten_us: storage_info_timings
-                    .storage_size_accounts_map_flatten_us,
                 total_slots: slots.len() as u64,
                 ..GenerateIndexTimings::default()
             };
@@ -9481,36 +9470,6 @@ impl AccountsDb {
         (accounts_data_len_from_duplicates as u64, uncleaned_slots)
     }
 
-    fn update_storage_info(
-        storage_info: &StorageSizeAndCountMap,
-        accounts_map: &GenerateIndexAccountsMap<'_>,
-        timings: &Mutex<GenerateIndexTimings>,
-        store_id: AppendVecId,
-    ) {
-        let mut storage_size_accounts_map_time = Measure::start("storage_size_accounts_map");
-
-        // first collect into a local HashMap with no lock contention
-        let mut storage_info_local = StorageSizeAndCount::default();
-        for (_, v) in accounts_map.iter() {
-            storage_info_local.stored_size += v.stored_size();
-            storage_info_local.count += 1;
-        }
-        storage_size_accounts_map_time.stop();
-        // second, collect into the shared DashMap once we've figured out all the info per store_id
-        let mut storage_size_accounts_map_flatten_time =
-            Measure::start("storage_size_accounts_map_flatten_time");
-        if !accounts_map.is_empty() {
-            let mut info = storage_info.entry(store_id).or_default();
-            info.stored_size += storage_info_local.stored_size;
-            info.count += storage_info_local.count;
-        }
-        storage_size_accounts_map_flatten_time.stop();
-
-        let mut timings = timings.lock().unwrap();
-        timings.storage_size_accounts_map_us += storage_size_accounts_map_time.as_us();
-        timings.storage_size_accounts_map_flatten_us +=
-            storage_size_accounts_map_flatten_time.as_us();
-    }
     fn set_storage_count_and_alive_bytes(
         &self,
         stored_sizes_and_counts: StorageSizeAndCountMap,
@@ -9529,8 +9488,15 @@ impl AccountsDb {
                     entry.count,
                     store.count(),
                 );
-                store.count_and_status.write().unwrap().0 = entry.count;
+                {
+                    let mut count_and_status = store.count_and_status.write().unwrap();
+                    assert_eq!(count_and_status.0, 0);
+                    count_and_status.0 = entry.count;
+                }
                 store.alive_bytes.store(entry.stored_size, Ordering::SeqCst);
+                store
+                    .approx_store_count
+                    .store(entry.count, Ordering::Relaxed);
             } else {
                 trace!("id: {} clearing count", id);
                 store.count_and_status.write().unwrap().0 = 0;
@@ -10701,10 +10667,10 @@ pub mod tests {
             )
             .unwrap();
         let mut expected = vec![Vec::new(); bins];
-        expected[0].push(raw_expected[0].clone());
-        expected[0].push(raw_expected[1].clone());
-        expected[bins - 1].push(raw_expected[2].clone());
-        expected[bins - 1].push(raw_expected[3].clone());
+        expected[0].push(raw_expected[0]);
+        expected[0].push(raw_expected[1]);
+        expected[bins - 1].push(raw_expected[2]);
+        expected[bins - 1].push(raw_expected[3]);
         assert_scan(result, vec![expected], bins, 0, bins);
 
         let bins = 4;
@@ -10723,10 +10689,10 @@ pub mod tests {
             )
             .unwrap();
         let mut expected = vec![Vec::new(); bins];
-        expected[0].push(raw_expected[0].clone());
-        expected[1].push(raw_expected[1].clone());
-        expected[2].push(raw_expected[2].clone());
-        expected[bins - 1].push(raw_expected[3].clone());
+        expected[0].push(raw_expected[0]);
+        expected[1].push(raw_expected[1]);
+        expected[2].push(raw_expected[2]);
+        expected[bins - 1].push(raw_expected[3]);
         assert_scan(result, vec![expected], bins, 0, bins);
 
         let bins = 256;
@@ -10745,10 +10711,10 @@ pub mod tests {
             )
             .unwrap();
         let mut expected = vec![Vec::new(); bins];
-        expected[0].push(raw_expected[0].clone());
-        expected[127].push(raw_expected[1].clone());
-        expected[128].push(raw_expected[2].clone());
-        expected[bins - 1].push(raw_expected.last().unwrap().clone());
+        expected[0].push(raw_expected[0]);
+        expected[127].push(raw_expected[1]);
+        expected[128].push(raw_expected[2]);
+        expected[bins - 1].push(*raw_expected.last().unwrap());
         assert_scan(result, vec![expected], bins, 0, bins);
     }
 
@@ -10807,8 +10773,8 @@ pub mod tests {
             )
             .unwrap();
         let mut expected = vec![Vec::new(); half_bins];
-        expected[0].push(raw_expected[0].clone());
-        expected[0].push(raw_expected[1].clone());
+        expected[0].push(raw_expected[0]);
+        expected[0].push(raw_expected[1]);
         assert_scan(result, vec![expected], bins, 0, half_bins);
 
         // just the second bin of 2
@@ -10829,8 +10795,8 @@ pub mod tests {
 
         let mut expected = vec![Vec::new(); half_bins];
         let starting_bin_index = 0;
-        expected[starting_bin_index].push(raw_expected[2].clone());
-        expected[starting_bin_index].push(raw_expected[3].clone());
+        expected[starting_bin_index].push(raw_expected[2]);
+        expected[starting_bin_index].push(raw_expected[3]);
         assert_scan(result, vec![expected], bins, 1, bins - 1);
 
         // 1 bin at a time of 4
@@ -10852,7 +10818,7 @@ pub mod tests {
                 )
                 .unwrap();
             let mut expected = vec![Vec::new(); 1];
-            expected[0].push(expected_item.clone());
+            expected[0].push(*expected_item);
             assert_scan(result, vec![expected], bins, bin, 1);
         }
 
@@ -10877,7 +10843,7 @@ pub mod tests {
             let mut expected = vec![];
             if let Some(index) = bin_locations.iter().position(|&r| r == bin) {
                 expected = vec![Vec::new(); range];
-                expected[0].push(raw_expected[index].clone());
+                expected[0].push(raw_expected[index]);
             }
             let mut result2 = (0..range).map(|_| Vec::default()).collect::<Vec<_>>();
             if let Some(m) = result.get(0) {
@@ -10922,7 +10888,7 @@ pub mod tests {
             .unwrap();
         assert_eq!(result.len(), 1); // 2 chunks, but 1 is empty so not included
         let mut expected = vec![Vec::new(); range];
-        expected[0].push(raw_expected[1].clone());
+        expected[0].push(raw_expected[1]);
         let mut result2 = (0..range).map(|_| Vec::default()).collect::<Vec<_>>();
         result[0].load_all(&mut result2, 0, &PubkeyBinCalculator24::new(range));
         assert_eq!(result2.len(), 1);
@@ -15765,20 +15731,34 @@ pub mod tests {
     #[test]
     fn test_calculate_storage_count_and_alive_bytes() {
         let accounts = AccountsDb::new_single_for_tests();
+        accounts.accounts_index.set_startup(Startup::Startup);
         let shared_key = solana_sdk::pubkey::new_rand();
         let account = AccountSharedData::new(1, 1, AccountSharedData::default().owner());
         let slot0 = 0;
-        accounts.store_for_tests(slot0, &[(&shared_key, &account)]);
-        accounts.add_root_and_flush_write_cache(slot0);
+
+        accounts.accounts_index.set_startup(Startup::Startup);
+
+        let storage = accounts.create_and_insert_store(slot0, 4_000, "flush_slot_cache");
+        let hashes = vec![Hash::default(); 1];
+        let write_version = vec![0; 1];
+        storage.accounts.append_accounts(
+            &StorableAccountsWithHashesAndWriteVersions::new_with_hashes_and_write_versions(
+                &(slot0, &[(&shared_key, &account)][..]),
+                hashes,
+                write_version,
+            ),
+            0,
+        );
 
         let storage = accounts.storage.get_slot_storage_entry(slot0).unwrap();
         let storage_info = StorageSizeAndCountMap::default();
         let accounts_map = accounts.process_storage_slot(&storage);
-        AccountsDb::update_storage_info(
+        accounts.generate_index_for_slot(
+            accounts_map,
+            slot0,
+            0,
+            &RentCollector::default(),
             &storage_info,
-            &accounts_map,
-            &Mutex::default(),
-            storage.append_vec_id(),
         );
         assert_eq!(storage_info.len(), 1);
         for entry in storage_info.iter() {
@@ -15787,6 +15767,7 @@ pub mod tests {
                 (&0, 1, 144)
             );
         }
+        accounts.accounts_index.set_startup(Startup::Normal);
     }
 
     #[test]
@@ -15796,11 +15777,12 @@ pub mod tests {
         let storage = accounts.create_and_insert_store(0, 1, "test");
         let storage_info = StorageSizeAndCountMap::default();
         let accounts_map = accounts.process_storage_slot(&storage);
-        AccountsDb::update_storage_info(
+        accounts.generate_index_for_slot(
+            accounts_map,
+            0,
+            0,
+            &RentCollector::default(),
             &storage_info,
-            &accounts_map,
-            &Mutex::default(),
-            storage.append_vec_id(),
         );
         assert!(storage_info.is_empty());
     }
@@ -15812,6 +15794,8 @@ pub mod tests {
             solana_sdk::pubkey::Pubkey::from([0; 32]),
             solana_sdk::pubkey::Pubkey::from([255; 32]),
         ];
+        accounts.accounts_index.set_startup(Startup::Startup);
+
         // make sure accounts are in 2 different bins
         assert!(
             (accounts.accounts_index.bins() == 1)
@@ -15827,18 +15811,26 @@ pub mod tests {
         let account = AccountSharedData::new(1, 1, AccountSharedData::default().owner());
         let account_big = AccountSharedData::new(1, 1000, AccountSharedData::default().owner());
         let slot0 = 0;
-        accounts.store_for_tests(slot0, &[(&keys[0], &account)]);
-        accounts.store_for_tests(slot0, &[(&keys[1], &account_big)]);
-        accounts.add_root_and_flush_write_cache(slot0);
+        let storage = accounts.create_and_insert_store(slot0, 4_000, "flush_slot_cache");
+        let hashes = vec![Hash::default(); 2];
+        let write_version = vec![0; 2];
+        storage.accounts.append_accounts(
+            &StorableAccountsWithHashesAndWriteVersions::new_with_hashes_and_write_versions(
+                &(slot0, &[(&keys[0], &account), (&keys[1], &account_big)][..]),
+                hashes,
+                write_version,
+            ),
+            0,
+        );
 
-        let storage = accounts.storage.get_slot_storage_entry(slot0).unwrap();
         let storage_info = StorageSizeAndCountMap::default();
         let accounts_map = accounts.process_storage_slot(&storage);
-        AccountsDb::update_storage_info(
+        accounts.generate_index_for_slot(
+            accounts_map,
+            0,
+            0,
+            &RentCollector::default(),
             &storage_info,
-            &accounts_map,
-            &Mutex::default(),
-            storage.append_vec_id(),
         );
         assert_eq!(storage_info.len(), 1);
         for entry in storage_info.iter() {
@@ -15847,6 +15839,7 @@ pub mod tests {
                 (&0, 2, 1280)
             );
         }
+        accounts.accounts_index.set_startup(Startup::Normal);
     }
 
     #[test]
@@ -15863,6 +15856,8 @@ pub mod tests {
         // fake out the store count to avoid the assert
         for (_, store) in accounts.storage.iter() {
             store.alive_bytes.store(0, Ordering::Release);
+            let mut count_and_status = store.count_and_status.write().unwrap();
+            count_and_status.0 = 0;
         }
 
         // populate based on made up hash data
@@ -15874,6 +15869,7 @@ pub mod tests {
                 count: 3,
             },
         );
+
         accounts.set_storage_count_and_alive_bytes(dashmap, &mut GenerateIndexTimings::default());
         assert_eq!(accounts.storage.len(), 1);
         for (_, store) in accounts.storage.iter() {
