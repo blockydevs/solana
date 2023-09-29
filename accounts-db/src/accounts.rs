@@ -252,7 +252,6 @@ impl Accounts {
             let _process_transaction_result = compute_budget.process_instructions(
                 tx.message().program_instructions_iter(),
                 !feature_set.is_active(&remove_deprecated_request_unit_ix::id()),
-                true, // don't reject txs that use request heap size ix
                 feature_set.is_active(&add_set_tx_loaded_accounts_data_size_instruction::id()),
             );
             // sanitize against setting size limit to zero
@@ -648,7 +647,7 @@ impl Accounts {
         ancestors: &Ancestors,
         txs: &[SanitizedTransaction],
         lock_results: &mut [TransactionCheckResult],
-        program_owners: &[&'a Pubkey],
+        program_owners: &'a [Pubkey],
         hash_queue: &BlockhashQueue,
     ) -> HashMap<Pubkey, (&'a Pubkey, u64)> {
         let mut result: HashMap<Pubkey, (&'a Pubkey, u64)> = HashMap::new();
@@ -678,7 +677,7 @@ impl Accounts {
                                 ) {
                                     program_owners
                                         .get(index)
-                                        .map(|owner| entry.insert((*owner, 1)));
+                                        .map(|owner| entry.insert((owner, 1)));
                                 }
                             }
                         });
@@ -723,7 +722,7 @@ impl Accounts {
                         fee_structure.calculate_fee(
                             tx.message(),
                             lamports_per_signature,
-                            &ComputeBudget::fee_budget_limits(tx.message().program_instructions_iter(), feature_set, Some(self.accounts_db.expected_cluster_type())),
+                            &ComputeBudget::fee_budget_limits(tx.message().program_instructions_iter(), feature_set),
                             feature_set.is_active(&remove_congestion_multiplier_from_fee_calculation::id()),
                             feature_set.is_active(&include_loaded_accounts_data_size_in_fee_calculation::id()),
                         )
@@ -1758,11 +1757,7 @@ mod tests {
         let fee = FeeStructure::default().calculate_fee(
             &message,
             lamports_per_signature,
-            &ComputeBudget::fee_budget_limits(
-                message.program_instructions_iter(),
-                &feature_set,
-                None,
-            ),
+            &ComputeBudget::fee_budget_limits(message.program_instructions_iter(), &feature_set),
             true,
             false,
         );
@@ -2090,11 +2085,12 @@ mod tests {
         let sanitized_tx2 = SanitizedTransaction::from_transaction_for_tests(tx2);
 
         let ancestors = vec![(0, 0)].into_iter().collect();
+        let owners = &[program1_pubkey, program2_pubkey];
         let programs = accounts.filter_executable_program_accounts(
             &ancestors,
             &[sanitized_tx1, sanitized_tx2],
             &mut [(Ok(()), None), (Ok(()), None)],
-            &[&program1_pubkey, &program2_pubkey],
+            owners,
             &hash_queue,
         );
 
@@ -2198,12 +2194,13 @@ mod tests {
         let sanitized_tx2 = SanitizedTransaction::from_transaction_for_tests(tx2);
 
         let ancestors = vec![(0, 0)].into_iter().collect();
+        let owners = &[program1_pubkey, program2_pubkey];
         let mut lock_results = vec![(Ok(()), None), (Ok(()), None)];
         let programs = accounts.filter_executable_program_accounts(
             &ancestors,
             &[sanitized_tx1, sanitized_tx2],
             &mut lock_results,
-            &[&program1_pubkey, &program2_pubkey],
+            owners,
             &hash_queue,
         );
 
@@ -4325,11 +4322,7 @@ mod tests {
         let fee = FeeStructure::default().calculate_fee(
             &message,
             lamports_per_signature,
-            &ComputeBudget::fee_budget_limits(
-                message.program_instructions_iter(),
-                &feature_set,
-                None,
-            ),
+            &ComputeBudget::fee_budget_limits(message.program_instructions_iter(), &feature_set),
             true,
             false,
         );
