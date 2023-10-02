@@ -1,3 +1,4 @@
+use log::debug;
 use {
     clap::{crate_description, crate_name, value_t_or_exit, ArgMatches},
     console::style,
@@ -252,8 +253,10 @@ fn do_main(matches: &ArgMatches<'_>) -> Result<(), Box<dyn error::Error>> {
         let mut wallet_manager = None;
 
         let (mut config, signers) = parse_args(matches, &mut wallet_manager)?;
+        debug!("Signer: {:#?}", signers);
         config.signers = signers.iter().map(|s| s.as_ref()).collect();
         let result = process_command(&config)?;
+        debug!("Result: {:#?}", result);
         println!("{result}");
     };
     Ok(())

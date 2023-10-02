@@ -49,6 +49,7 @@ use {
     },
     std::{fmt::Write as FmtWrite, fs::File, io::Write, rc::Rc, str::FromStr},
 };
+use solana_sdk::signer::Signer;
 
 pub trait WalletSubCommands {
     fn wallet_subcommands(self) -> Self;
@@ -603,12 +604,17 @@ pub fn parse_sign_offchain_message(
     let version: u8 = value_of(matches, "version").unwrap();
     let message_text: String = value_of(matches, "message")
         .ok_or_else(|| CliError::BadParameter("MESSAGE".to_string()))?;
-    let message = OffchainMessage::new(version, message_text.as_bytes())
+
+    let signer = default_signer.signer_from_path(matches, wallet_manager)?;
+
+    let public_key: Pubkey = signer.pubkey();
+
+    let message = OffchainMessage::new(version, message_text.as_bytes(), &public_key)
         .map_err(|_| CliError::BadParameter("VERSION or MESSAGE".to_string()))?;
 
     Ok(CliCommandInfo {
         command: CliCommand::SignOffchainMessage { message },
-        signers: vec![default_signer.signer_from_path(matches, wallet_manager)?],
+        signers: vec![signer],
     })
 }
 
@@ -617,13 +623,17 @@ pub fn parse_verify_offchain_signature(
     default_signer: &DefaultSigner,
     wallet_manager: &mut Option<Rc<RemoteWalletManager>>,
 ) -> Result<CliCommandInfo, CliError> {
+
     let version: u8 = value_of(matches, "version").unwrap();
+
     let message_text: String = value_of(matches, "message")
         .ok_or_else(|| CliError::BadParameter("MESSAGE".to_string()))?;
-    let message = OffchainMessage::new(version, message_text.as_bytes())
-        .map_err(|_| CliError::BadParameter("VERSION or MESSAGE".to_string()))?;
 
     let signer_pubkey = pubkey_of_signer(matches, "signer", wallet_manager)?;
+
+    let message = OffchainMessage::new(version, message_text.as_bytes(), &signer_pubkey.unwrap())
+        .map_err(|_| CliError::BadParameter("VERSION or MESSAGE".to_string()))?;
+
     let signers = if signer_pubkey.is_some() {
         vec![]
     } else {

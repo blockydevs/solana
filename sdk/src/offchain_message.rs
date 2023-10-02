@@ -42,6 +42,8 @@ pub enum MessageFormat {
     ExtendedUtf8,
 }
 
+const SIGNING_DOMAIN: &[u8; 16] = b"\xffsolana offchain";
+
 #[allow(clippy::arithmetic_side_effects)]
 pub mod v0 {
     use {
@@ -52,12 +54,19 @@ pub mod v0 {
             sanitize::SanitizeError,
         },
     };
+    use solana_program::pubkey::Pubkey;
+    use crate::offchain_message::SIGNING_DOMAIN;
 
     /// OffchainMessage Version 0.
     /// Struct always contains a non-empty valid message.
     #[derive(Debug, PartialEq, Eq, Clone)]
     pub struct OffchainMessage {
+        signing_domain: [u8; 16],//Max 16 bytes
+        // header_version: u8,//This implementation is for version 0
+        application_domain: [u8; 32],//Max 32 bytes - can be arbitrary data
         format: MessageFormat,
+        signer_count: u8,
+        signers: Vec<Pubkey>,
         message: Vec<u8>,
     }
 
@@ -70,7 +79,7 @@ pub mod v0 {
         pub const MAX_LEN_LEDGER: usize = PACKET_DATA_SIZE - Base::HEADER_LEN - Self::HEADER_LEN;
 
         /// Construct a new OffchainMessage object from the given message
-        pub fn new(message: &[u8]) -> Result<Self, SanitizeError> {
+        pub fn new(message: &[u8], default_signer_pubkey: Pubkey) -> Result<Self, SanitizeError> {
             let format = if message.is_empty() {
                 return Err(SanitizeError::InvalidValue);
             } else if message.len() <= OffchainMessage::MAX_LEN_LEDGER {
@@ -91,22 +100,57 @@ pub mod v0 {
                 return Err(SanitizeError::ValueOutOfBounds);
             };
             Ok(Self {
+                signing_domain: *SIGNING_DOMAIN,
+                application_domain: [0; 32],//@TODO change to something else
                 format,
+                signer_count: 1,
+                signers: vec![default_signer_pubkey],
                 message: message.to_vec(),
             })
         }
 
         /// Serialize the message to bytes, including the full header
+        /// Message preamble data order:
+        /// 1. Signing domain (16 bytes)
+        /// 2. Header version (1 byte)
+        /// 3. Application domain (32 bytes)
+        /// 4. Message format (1 byte)
+        /// 5. Signer count (1 bytes)
+        /// 6. Signers (signer_count *  32 bytes)
+        /// 7. Message length (2 bytes)
         pub fn serialize(&self, data: &mut Vec<u8>) -> Result<(), SanitizeError> {
             // invalid messages shouldn't be possible, but a quick sanity check never hurts
             assert!(!self.message.is_empty() && self.message.len() <= Self::MAX_LEN);
-            data.reserve(Self::HEADER_LEN.saturating_add(self.message.len()));
-            // format
+
+            // data.reserve(Self::HEADER_LEN.saturating_add(self.message.len()));
+
+            //@TODO calculate more dyn :)
+            data.reserve(85_usize.saturating_add(self.message.len()));
+
+            data.append(SIGNING_DOMAIN.to_vec().as_mut());
+
+            //Header version
+            data.push(0);
+
+            data.extend_from_slice(&self.application_domain);
+
+            //Message format
             data.push(self.format.into());
+
+            // Signer count
+            data.push(self.signer_count);
+
+            // Signers
+            for signer in self.signers.iter() {
+                data.extend_from_slice(signer.as_ref());
+            }
+
             // message length
             data.extend_from_slice(&(self.message.len() as u16).to_le_bytes());
+
             // message
             data.extend_from_slice(&self.message);
+
             Ok(())
         }
 
@@ -138,7 +182,11 @@ pub mod v0 {
 
             if is_valid {
                 Ok(Self {
+                    signing_domain: *SIGNING_DOMAIN,
+                    application_domain: [0; 32],
                     format,
+                    signer_count: 1,
+                    signers: vec![],
                     message: message.to_vec(),
                 })
             } else {
@@ -169,14 +217,15 @@ pub enum OffchainMessage {
 }
 
 impl OffchainMessage {
+
     pub const SIGNING_DOMAIN: &'static [u8] = b"\xffsolana offchain";
     // Header Length = Signing Domain (16) + Header Version (1)
     pub const HEADER_LEN: usize = Self::SIGNING_DOMAIN.len() + 1;
 
     /// Construct a new OffchainMessage object from the given version and message
-    pub fn new(version: u8, message: &[u8]) -> Result<Self, SanitizeError> {
+    pub fn new(version: u8, message: &[u8], default_signer_pubkey: &Pubkey) -> Result<Self, SanitizeError> {
         match version {
-            0 => Ok(Self::V0(v0::OffchainMessage::new(message)?)),
+            0 => Ok(Self::V0(v0::OffchainMessage::new(message, *default_signer_pubkey)?)),
             _ => Err(SanitizeError::ValueOutOfBounds),
         }
     }
@@ -184,12 +233,14 @@ impl OffchainMessage {
     /// Serialize the off-chain message to bytes including full header
     pub fn serialize(&self) -> Result<Vec<u8>, SanitizeError> {
         // serialize signing domain
-        let mut data = Self::SIGNING_DOMAIN.to_vec();
+        // let mut data = Self::SIGNING_DOMAIN.to_vec();
+
+        let mut data = Vec::with_capacity(85);//@TODO change to more dyn
 
         // serialize version and call version specific serializer
         match self {
             Self::V0(msg) => {
-                data.push(0);
+                // data.push(0);//Header version handled inside V0 implementation
                 msg.serialize(&mut data)?;
             }
         }
@@ -197,6 +248,7 @@ impl OffchainMessage {
     }
 
     /// Deserialize the off-chain message from bytes that include full header
+    /// Used only in tests
     pub fn deserialize(data: &[u8]) -> Result<Self, SanitizeError> {
         if data.len() <= Self::HEADER_LEN {
             return Err(SanitizeError::ValueOutOfBounds);
@@ -251,7 +303,7 @@ mod tests {
 
     #[test]
     fn test_offchain_message_ascii() {
-        let message = OffchainMessage::new(0, b"Test Message").unwrap();
+        let message = OffchainMessage::new(0, b"Test Message", &Pubkey::default()).unwrap();
         assert_eq!(message.get_version(), 0);
         assert_eq!(message.get_format(), MessageFormat::RestrictedAscii);
         assert_eq!(message.get_message().as_slice(), b"Test Message");
@@ -270,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_offchain_message_utf8() {
-        let message = OffchainMessage::new(0, "Тестовое сообщение".as_bytes()).unwrap();
+        let message = OffchainMessage::new(0, "Тестовое сообщение".as_bytes(), &Pubkey::default()).unwrap();
         assert_eq!(message.get_version(), 0);
         assert_eq!(message.get_format(), MessageFormat::LimitedUtf8);
         assert_eq!(
@@ -294,7 +346,7 @@ mod tests {
 
     #[test]
     fn test_offchain_message_sign_and_verify() {
-        let message = OffchainMessage::new(0, b"Test Message").unwrap();
+        let message = OffchainMessage::new(0, b"Test Message", &Pubkey::default()).unwrap();
         let keypair = Keypair::new();
         let signature = message.sign(&keypair).unwrap();
         assert!(message.verify(&keypair.pubkey(), &signature).unwrap());
