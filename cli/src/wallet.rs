@@ -51,7 +51,7 @@ use {
     },
     std::{fmt::Write as FmtWrite, fs::File, io::Write, rc::Rc, str::FromStr},
 };
-use solana_sdk::offchain_message::ApplicationDomain;
+use solana_sdk::offchain_message::{ApplicationDomain, Version as OffchainHeaderVersion};
 use solana_sdk::signer::Signer;
 
 pub trait WalletSubCommands {
@@ -342,14 +342,10 @@ impl WalletSubCommands for App<'_, '_> {
                             .value_name("VERSION")
                             .required(false)
                             .default_value("0")
-                            .validator(|p| match p.parse::<u8>() {
-                                Err(_) => Err(String::from("Must be unsigned integer")),
-                                Ok(_) => { Ok(()) }
-                            })
+                            .validator(is_valid_offchain_message_version)
                             .help("The off-chain message version")
                     )
-            )
-            .subcommand(
+            ).subcommand(
                 SubCommand::with_name("verify-offchain-signature")
                     .about("Verify off-chain message signature")
                     .arg(
@@ -383,10 +379,7 @@ impl WalletSubCommands for App<'_, '_> {
                             .value_name("VERSION")
                             .required(false)
                             .default_value("0")
-                            .validator(|p| match p.parse::<u8>() {
-                                Err(_) => Err(String::from("Must be unsigned integer")),
-                                Ok(_) => { Ok(()) }
-                            })
+                            .validator(is_valid_offchain_message_version)
                             .help("The off-chain message version")
                     )
                     .arg(
@@ -635,7 +628,7 @@ pub fn parse_sign_offchain_message(
     default_signer: &DefaultSigner,
     wallet_manager: &mut Option<Rc<RemoteWalletManager>>,
 ) -> Result<CliCommandInfo, CliError> {
-    let version: u8 = value_of(matches, "version").unwrap();
+    let version: OffchainHeaderVersion = value_of(matches, "version").unwrap();
 
     let application_domain = parse_application_domain(matches);
 
@@ -660,7 +653,7 @@ pub fn parse_verify_offchain_signature(
     default_signer: &DefaultSigner,
     wallet_manager: &mut Option<Rc<RemoteWalletManager>>,
 ) -> Result<CliCommandInfo, CliError> {
-    let version: u8 = value_of(matches, "version").unwrap();
+    let version: OffchainHeaderVersion = value_of(matches, "version").unwrap();
 
     let application_domain = parse_application_domain(matches);
 

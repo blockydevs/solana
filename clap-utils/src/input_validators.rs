@@ -10,6 +10,7 @@ use {
     std::{fmt::Display, ops::RangeBounds, str::FromStr},
 };
 use solana_sdk::bs58;
+use solana_sdk::offchain_message::Version as OffchainMessageVersion;
 
 fn is_parsable_generic<U, T>(string: T) -> Result<(), String>
 where
@@ -379,6 +380,17 @@ where
         }
     }
 }
+
+
+pub fn is_valid_offchain_message_version<T>(value: T) -> Result<(), String>
+where T: AsRef<str> + Display {
+    let value = value.as_ref();
+    match value.parse::<OffchainMessageVersion>() {
+        Err(_) => Err("Must be valid header version (unsigned integer)".to_string()),
+        Ok(_) => { Ok(()) }
+    }
+}
+
 
 pub fn is_base_58_string<T>(value: T) -> Result<(), String>
 where T: AsRef<str> + Display {

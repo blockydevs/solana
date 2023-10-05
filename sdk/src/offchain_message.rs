@@ -2,6 +2,8 @@
 
 #![cfg(feature = "full")]
 
+use std::str::FromStr;
+use thiserror::Error;
 use {
     crate::{
         hash::Hash,
@@ -41,6 +43,21 @@ pub enum Version {
 
 impl Version {
     const LEN: usize = std::mem::size_of::<Self>();
+}
+
+#[derive(Debug, Error, Eq, PartialEq)]
+#[error("invalid value for offchain message version: `{0}`")]
+pub struct VersionFromStrError(String);
+impl FromStr for Version {
+    type Err = VersionFromStrError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Ok(version) = s.parse::<<Self as TryFromPrimitive>::Primitive>() {
+            if let Ok(version) = Version::try_from_primitive(version) {
+                return Ok(version);
+            }
+        }
+        Err(VersionFromStrError(s.to_string()))
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -267,10 +284,9 @@ pub enum OffchainMessage {
 
 impl OffchainMessage {
     /// Construct a new OffchainMessage object from the given version and message
-    pub fn new(version: u8, message: &[u8], default_signer_pubkey: &Pubkey, application_domain: ApplicationDomain) -> Result<Self, SanitizeError> {
+    pub fn new(version: Version, message: &[u8], default_signer_pubkey: &Pubkey, application_domain: ApplicationDomain) -> Result<Self, SanitizeError> {
         match version {
-            0 => Ok(Self::V0(v0::OffchainMessage::new(message, *default_signer_pubkey, application_domain)?)),
-            _ => Err(SanitizeError::ValueOutOfBounds),
+            Version::V0 => Ok(Self::V0(v0::OffchainMessage::new(message, *default_signer_pubkey, application_domain)?)),
         }
     }
 
