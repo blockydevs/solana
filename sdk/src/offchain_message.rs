@@ -28,6 +28,41 @@ pub enum MessageFormat {
     ExtendedUtf8,
 }
 
+impl MessageFormat {
+    const LEN: usize = std::mem::size_of::<Self>();
+}
+
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive, IntoPrimitive)]
+pub enum Version {
+    V0 = 0,
+}
+
+impl Version {
+    const LEN: usize = std::mem::size_of::<Self>();
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ApplicationDomain([u8; Self::LEN]);
+
+impl ApplicationDomain {
+    const LEN: usize = 32;
+    pub fn new(domain: [u8; Self::LEN]) -> Self {
+        Self(domain)
+    }
+
+    ///Return current values
+    pub fn buffer(&self) -> [u8; Self::LEN] {
+        self.0
+    }
+
+    pub fn from_slice(domain: &[u8]) -> Self {
+        let mut application_domain = Self::default();
+        application_domain.0.copy_from_slice(domain);
+        application_domain
+    }
+}
 
 #[allow(clippy::arithmetic_side_effects)]
 pub mod v0 {
@@ -40,6 +75,7 @@ pub mod v0 {
         super::MessageFormat,
     };
     use solana_program::pubkey::Pubkey;
+    use solana_sdk::offchain_message::ApplicationDomain;
     use solana_sdk::string_utils::{is_printable_ascii, is_utf8};
 
     pub const SIGNING_DOMAIN: &[u8; 16] = b"\xffsolana offchain";
@@ -74,7 +110,7 @@ pub mod v0 {
 
     impl OffchainMessage {
         /// Construct a new OffchainMessage object from the given message
-        pub fn new(message: &[u8], default_signer_pubkey: Pubkey) -> Result<Self, SanitizeError> {
+        pub fn new(message: &[u8], default_signer_pubkey: Pubkey, application_domain: ApplicationDomain) -> Result<Self, SanitizeError> {
             let format = if message.is_empty() {
                 return Err(SanitizeError::InvalidValue);
             } else if message.len() <= MAX_MESSAGE_LENGTH_LEDGER {
@@ -97,7 +133,7 @@ pub mod v0 {
             Ok(Self {
                 signing_domain: *SIGNING_DOMAIN,
                 header_version: 0,//This implementation is defined for V0 only
-                application_domain: [0; 32],
+                application_domain: application_domain.0,
                 format,
                 signer_count: 1,//CLI supports only one signer
                 signers: vec![default_signer_pubkey],
@@ -231,9 +267,9 @@ pub enum OffchainMessage {
 
 impl OffchainMessage {
     /// Construct a new OffchainMessage object from the given version and message
-    pub fn new(version: u8, message: &[u8], default_signer_pubkey: &Pubkey) -> Result<Self, SanitizeError> {
+    pub fn new(version: u8, message: &[u8], default_signer_pubkey: &Pubkey, application_domain: ApplicationDomain) -> Result<Self, SanitizeError> {
         match version {
-            0 => Ok(Self::V0(v0::OffchainMessage::new(message, *default_signer_pubkey)?)),
+            0 => Ok(Self::V0(v0::OffchainMessage::new(message, *default_signer_pubkey, application_domain)?)),
             _ => Err(SanitizeError::ValueOutOfBounds),
         }
     }
@@ -310,7 +346,7 @@ mod tests {
     use {crate::signature::Keypair, std::str::FromStr, super::*};
 
     #[test]
-    fn test_offchain_message_extended_utf8(){
+    fn test_offchain_message_extended_utf8() {
         let text_message = "Ł".repeat(v0::MAX_MESSAGE_LENGTH_LEDGER.saturating_add(1));
         let message = OffchainMessage::new(0, text_message.as_ref(), &Pubkey::default()).unwrap();
         assert_eq!(message.get_format(), MessageFormat::ExtendedUtf8);

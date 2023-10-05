@@ -9,6 +9,7 @@ use {
     },
     std::{fmt::Display, ops::RangeBounds, str::FromStr},
 };
+use solana_sdk::bs58;
 
 fn is_parsable_generic<U, T>(string: T) -> Result<(), String>
 where
@@ -379,6 +380,16 @@ where
     }
 }
 
+pub fn is_base_58_string<T>(value: T) -> Result<(), String>
+where T: AsRef<str> + Display {
+    let value = value.as_ref();
+    if bs58::decode(value).into_vec().is_err() {
+        Err("Application domain must be valid Base58 string".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 pub fn is_derived_address_seed<T>(value: T) -> Result<(), String>
 where
     T: AsRef<str> + Display,
@@ -424,6 +435,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_base_58(){
+        assert_eq!(is_base_58_string("6sBFcNXUTq9GY3"), Ok(()));
+        assert_eq!(is_base_58_string(""), Ok(()));
+
+        assert!(is_base_58_string("invalid").is_err());
+        assert!(is_base_58_string(" ").is_err());
+        assert!(is_base_58_string("012345").is_err());
+    }
+
 
     #[test]
     fn test_is_derivation() {
