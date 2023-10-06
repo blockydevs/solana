@@ -280,7 +280,8 @@ pub fn is_amount<T>(amount: T) -> Result<(), String>
 where
     T: AsRef<str> + Display,
 {
-    if amount.as_ref().parse::<u64>().is_ok() || amount.as_ref().parse::<f64>().is_ok() {
+    let amount = amount.as_ref();
+    if amount.parse::<u64>().is_ok() || amount.parse::<f64>().is_ok() {
         Ok(())
     } else {
         Err(format!(
@@ -381,7 +382,6 @@ where
     }
 }
 
-
 pub fn is_valid_offchain_message_version<T>(value: T) -> Result<(), String>
 where T: AsRef<str> + Display {
     let value = value.as_ref();
@@ -390,7 +390,6 @@ where T: AsRef<str> + Display {
         Ok(_) => { Ok(()) }
     }
 }
-
 
 pub fn is_base_58_string<T>(value: T) -> Result<(), String>
 where T: AsRef<str> + Display {

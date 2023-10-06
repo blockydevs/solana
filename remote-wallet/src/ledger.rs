@@ -527,8 +527,8 @@ impl RemoteWallet<hidapi::DeviceInfo> for LedgerWallet {
         message: &[u8],
     ) -> Result<Signature, RemoteWalletError> {
         if message.len()
-            > offchain_message::v0::MAX_MESSAGE_LENGTH_LEDGER
-                + offchain_message::v0::HEADER_LENGTH
+            > offchain_message::v0::OffchainMessage::max_message_for_ledger(&vec![Pubkey::default()])
+                + offchain_message::v0::OffchainMessage::header_length(&vec![Pubkey::default()])
         {
             return Err(RemoteWalletError::InvalidInput(
                 "Off-chain message to sign is too long".to_string(),
