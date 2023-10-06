@@ -639,7 +639,7 @@ pub fn parse_sign_offchain_message(
 
     let signer = default_signer.signer_from_path(matches, wallet_manager)?;
 
-    let message = OffchainMessage::new(version, message_text.as_bytes(), &signer.pubkey(), application_domain)
+    let message = OffchainMessage::new(version, message_text.as_bytes(), vec![signer.pubkey()], application_domain)
         .map_err(|_| CliError::BadParameter("VERSION or MESSAGE".to_string()))?;
 
     Ok(CliCommandInfo {
@@ -662,7 +662,7 @@ pub fn parse_verify_offchain_signature(
 
     let signer = default_signer.signer_from_path(matches, wallet_manager)?;
 
-    let message = OffchainMessage::new(version, message_text.as_bytes(), &signer.pubkey(), application_domain)
+    let message = OffchainMessage::new(version, message_text.as_bytes(), vec![signer.pubkey()], application_domain)
         .map_err(|_| CliError::BadParameter("VERSION or MESSAGE".to_string()))?;
 
     let signer_pubkey = pubkey_of_signer(matches, "signer", wallet_manager)?;
