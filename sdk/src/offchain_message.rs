@@ -727,11 +727,10 @@ mod tests {
 
     #[test]
     fn test_deserialize_bounds() {
-        let mut test_serialized: Vec<u8> = vec![255, 115, 111, 108, 97, 110, 97, 32, 111, 102, 102, 99, 104, 97, 105, 110, 0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 12, 0, 116, 101, 115, 116, 32, 109, 101, 115, 115, 97, 103, 101];
+        let test_serialized: Vec<u8> = vec![255, 115, 111, 108, 97, 110, 97, 32, 111, 102, 102, 99, 104, 97, 105, 110, 0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 12, 0, 116, 101, 115, 116, 32, 109, 101, 115, 115, 97, 103, 101];
 
         // assert test bytes inputs
         let signers = vec![Pubkey::from([1u8; 32]), Pubkey::from([2u8; 32])];
-        let num_signers = signers.len();
         let application_domain = ApplicationDomain::new([3u8; 32]);
         let message = OffchainMessage::new(
             Version::V0,
@@ -803,8 +802,6 @@ mod tests {
         );
 
         // v0 too short for all signers
-        let data = &test_serialized[..next_field_offset - 1];
-
         let mut data_cpy = test_serialized.clone();
         data_cpy[v0::SIGNING_DOMAIN.len() + Version::LEN + ApplicationDomain::LEN + MessageFormat::LEN] = 10;
         assert_eq!(
@@ -819,4 +816,45 @@ mod tests {
             Err(Error::BufferTooShort),
         );
     }
+
+    #[test]
+    fn test_application_domain_from_slice_empty_buffer(){
+        let input_params = [0_u8; 32];
+
+        let app_domain: ApplicationDomain = ApplicationDomain::from_slice(&input_params);
+
+        assert_eq!(app_domain.buffer(), input_params);
+    }
+
+    #[test]
+    fn test_application_domain_from_slice_key(){
+        let input_params_base58: &str = "9tjwwvfJssteUgJXs6uj6WYCXABCfcwhtzhbeXrhgBzc";
+        let input_params_decoded = bs58::decode(input_params_base58).into_vec().unwrap();
+
+        let app_domain = ApplicationDomain::from_slice(input_params_decoded.as_ref());
+
+        assert_eq!(app_domain.buffer(), input_params_decoded.as_ref());
+    }
+
+    #[test]
+    fn test_application_domain_invalid_utf8_message(){
+        let signers = vec![Pubkey::from([1u8; 32]), Pubkey::from([2u8; 32])];
+        let application_domain = ApplicationDomain::new([3u8; 32]);
+
+        //Generate invalid utf8 message
+        let mut message_data = Vec::from([0xc3, 0x28]);
+        message_data.resize(v0::OffchainMessage::max_message(&signers) - 10, 0);
+
+
+        let message_result = OffchainMessage::new(
+            Version::V0,
+            message_data.as_ref(),
+            signers,
+            application_domain.clone(),
+        );
+
+        assert_eq!(message_result, Err(Error::UnexpectedMessageEncoding));
+
+    }
+
 }

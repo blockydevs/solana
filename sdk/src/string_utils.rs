@@ -55,5 +55,12 @@ mod tests {
         assert!(is_utf8(data));
     }
 
+    #[test]
+    fn test_is_utf8_invalid(){
+        let mut data = Vec::from([0xc3, 0x28]);
+        data.resize(32,0);
+        assert!(!is_utf8(data.as_ref()));
+    }
+
 
 }

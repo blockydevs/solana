@@ -1,5 +1,3 @@
-use log::warn;
-
 use {
     clap::{App, Arg, ArgMatches, SubCommand, value_t_or_exit},
     crate::{
@@ -52,7 +50,6 @@ use {
     std::{fmt::Write as FmtWrite, fs::File, io::Write, rc::Rc, str::FromStr},
 };
 use solana_sdk::offchain_message::{ApplicationDomain, Version as OffchainHeaderVersion};
-use solana_sdk::signer::Signer;
 
 pub trait WalletSubCommands {
     fn wallet_subcommands(self) -> Self;
@@ -631,8 +628,6 @@ pub fn parse_sign_offchain_message(
     let version: OffchainHeaderVersion = value_of(matches, "version").unwrap();
 
     let application_domain = parse_application_domain(matches);
-
-    warn!("APP domain: {}", bs58::encode(application_domain.buffer()).into_string());
 
     let message_text: String = value_of(matches, "message")
         .ok_or_else(|| CliError::BadParameter("MESSAGE".to_string()))?;
